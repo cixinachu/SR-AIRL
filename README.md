@@ -1,6 +1,6 @@
 # SR-AIRL
 
-This repository contains a simple research pipeline for reward recovery, diffusion-based planning, reward-guided prediction, and evaluation on vehicle trajectory data.
+This repository contains a research for reward recovery, diffusion-based planning, reward-guided prediction, and evaluation on vehicle trajectory data.
 
 ## Structure
 
@@ -13,7 +13,7 @@ This repository contains a simple research pipeline for reward recovery, diffusi
 
 ## Installation
 
-Create a Python environment and install the dependencies:
+Create a Python environment and install the dependencies:创建一个Python环境并安装依赖：
 
 ```bash
 pip install -r requirements.txt
