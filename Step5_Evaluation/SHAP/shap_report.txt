@@ -1,0 +1,202 @@
+Analyzing files under: /mnt/h/A_CODE/Diff-LC/Step5_Evaluation/train_model_0_1_4_his
+Found 13 model files.
+
+=== disc_fv.pt ===
+alpha: shape=() params=1
+shared_phi_net.net.0.weight: shape=(64, 64) params=4096
+shared_phi_net.net.0.bias: shape=(64,) params=64
+shared_phi_net.net.2.weight: shape=(64, 64) params=4096
+shared_phi_net.net.2.bias: shape=(64,) params=64
+shared_phi_net.net.4.weight: shape=(1, 64) params=64
+shared_phi_net.net.4.bias: shape=(1,) params=1
+private_g.0.weight: shape=(64, 64) params=4096
+private_g.0.bias: shape=(64,) params=64
+private_g.2.weight: shape=(64, 64) params=4096
+private_g.2.bias: shape=(64,) params=64
+private_g.4.weight: shape=(1, 64) params=64
+private_g.4.bias: shape=(1,) params=1
+h.0.weight: shape=(64, 64) params=4096
+h.0.bias: shape=(64,) params=64
+h.2.weight: shape=(64, 64) params=4096
+h.2.bias: shape=(64,) params=64
+h.4.weight: shape=(1, 64) params=64
+h.4.bias: shape=(1,) params=1
+Total params: 25156
+
+=== disc_lcv.pt ===
+alpha: shape=() params=1
+shared_phi_net.net.0.weight: shape=(64, 64) params=4096
+shared_phi_net.net.0.bias: shape=(64,) params=64
+shared_phi_net.net.2.weight: shape=(64, 64) params=4096
+shared_phi_net.net.2.bias: shape=(64,) params=64
+shared_phi_net.net.4.weight: shape=(1, 64) params=64
+shared_phi_net.net.4.bias: shape=(1,) params=1
+private_g.0.weight: shape=(64, 64) params=4096
+private_g.0.bias: shape=(64,) params=64
+private_g.2.weight: shape=(64, 64) params=4096
+private_g.2.bias: shape=(64,) params=64
+private_g.4.weight: shape=(1, 64) params=64
+private_g.4.bias: shape=(1,) params=1
+h.0.weight: shape=(64, 64) params=4096
+h.0.bias: shape=(64,) params=64
+h.2.weight: shape=(64, 64) params=4096
+h.2.bias: shape=(64,) params=64
+h.4.weight: shape=(1, 64) params=64
+h.4.bias: shape=(1,) params=1
+Total params: 25156
+
+=== fv_buffer.pt ===
+Not a state_dict
+
+=== goal_model.pth ===
+lcv_gru.weight_ih_l0: shape=(384, 16) params=6144
+lcv_gru.weight_hh_l0: shape=(384, 128) params=49152
+lcv_gru.bias_ih_l0: shape=(384,) params=384
+lcv_gru.bias_hh_l0: shape=(384,) params=384
+fv_gru.weight_ih_l0: shape=(384, 4) params=1536
+fv_gru.weight_hh_l0: shape=(384, 128) params=49152
+fv_gru.bias_ih_l0: shape=(384,) params=384
+fv_gru.bias_hh_l0: shape=(384,) params=384
+mlp.0.weight: shape=(128, 128) params=16384
+mlp.0.bias: shape=(128,) params=128
+mlp.2.weight: shape=(2, 128) params=256
+mlp.2.bias: shape=(2,) params=2
+Total params: 124290
+
+=== guide.pth ===
+time_embed.timembedding.0.weight: shape=(100, 16) params=1600
+time_embed.timembedding.1.weight: shape=(64, 16) params=1024
+time_embed.timembedding.1.bias: shape=(64,) params=64
+time_embed.timembedding.3.weight: shape=(64, 64) params=4096
+time_embed.timembedding.3.bias: shape=(64,) params=64
+state_embed.0.weight: shape=(64, 16) params=1024
+state_embed.0.bias: shape=(64,) params=64
+state_embed.2.weight: shape=(64, 64) params=4096
+state_embed.2.bias: shape=(64,) params=64
+out_mlp.0.weight: shape=(64, 128) params=8192
+out_mlp.0.bias: shape=(64,) params=64
+out_mlp.2.weight: shape=(64, 64) params=4096
+out_mlp.2.bias: shape=(64,) params=64
+out_mlp.4.weight: shape=(1, 64) params=64
+out_mlp.4.bias: shape=(1,) params=1
+Total params: 24577
+
+=== lcv_buffer.pt ===
+Not a state_dict
+
+=== model_fv.pt ===
+Not a state_dict
+
+=== model_lcv.pt ===
+Not a state_dict
+
+=== planner.pt ===
+Total params: 0
+
+=== planner2.pt ===
+Total params: 0
+
+=== planner_dppo.pt ===
+Total params: 0
+
+=== predictor.pth ===
+context.hist_gru.weight_ih_l0: shape=(96, 6) params=576
+context.hist_gru.weight_hh_l0: shape=(96, 32) params=3072
+context.hist_gru.bias_ih_l0: shape=(96,) params=96
+context.hist_gru.bias_hh_l0: shape=(96,) params=96
+context.plan_gru.weight_ih_l0: shape=(96, 6) params=576
+context.plan_gru.weight_hh_l0: shape=(96, 32) params=3072
+context.plan_gru.bias_ih_l0: shape=(96,) params=96
+context.plan_gru.bias_hh_l0: shape=(96,) params=96
+time_embedding.timembedding.0.weight: shape=(100, 16) params=1600
+time_embedding.timembedding.1.weight: shape=(64, 16) params=1024
+time_embedding.timembedding.1.bias: shape=(64,) params=64
+time_embedding.timembedding.3.weight: shape=(64, 64) params=4096
+time_embedding.timembedding.3.bias: shape=(64,) params=64
+pos_emb.pe: shape=(100, 1, 128) params=12800
+concat1._layer.weight: shape=(128, 4) params=512
+concat1._hyper_bias.weight: shape=(128, 128) params=16384
+concat1._hyper_gate.weight: shape=(128, 128) params=16384
+concat1._hyper_gate.bias: shape=(128,) params=128
+layer.self_attn.in_proj_weight: shape=(384, 128) params=49152
+layer.self_attn.in_proj_bias: shape=(384,) params=384
+layer.self_attn.out_proj.weight: shape=(128, 128) params=16384
+layer.self_attn.out_proj.bias: shape=(128,) params=128
+layer.linear1.weight: shape=(256, 128) params=32768
+layer.linear1.bias: shape=(256,) params=256
+layer.linear2.weight: shape=(128, 256) params=32768
+layer.linear2.bias: shape=(128,) params=128
+layer.norm1.weight: shape=(128,) params=128
+layer.norm1.bias: shape=(128,) params=128
+layer.norm2.weight: shape=(128,) params=128
+layer.norm2.bias: shape=(128,) params=128
+transformer_encoder.layers.0.self_attn.in_proj_weight: shape=(384, 128) params=49152
+transformer_encoder.layers.0.self_attn.in_proj_bias: shape=(384,) params=384
+transformer_encoder.layers.0.self_attn.out_proj.weight: shape=(128, 128) params=16384
+transformer_encoder.layers.0.self_attn.out_proj.bias: shape=(128,) params=128
+transformer_encoder.layers.0.linear1.weight: shape=(256, 128) params=32768
+transformer_encoder.layers.0.linear1.bias: shape=(256,) params=256
+transformer_encoder.layers.0.linear2.weight: shape=(128, 256) params=32768
+transformer_encoder.layers.0.linear2.bias: shape=(128,) params=128
+transformer_encoder.layers.0.norm1.weight: shape=(128,) params=128
+transformer_encoder.layers.0.norm1.bias: shape=(128,) params=128
+transformer_encoder.layers.0.norm2.weight: shape=(128,) params=128
+transformer_encoder.layers.0.norm2.bias: shape=(128,) params=128
+transformer_encoder.layers.1.self_attn.in_proj_weight: shape=(384, 128) params=49152
+transformer_encoder.layers.1.self_attn.in_proj_bias: shape=(384,) params=384
+transformer_encoder.layers.1.self_attn.out_proj.weight: shape=(128, 128) params=16384
+transformer_encoder.layers.1.self_attn.out_proj.bias: shape=(128,) params=128
+transformer_encoder.layers.1.linear1.weight: shape=(256, 128) params=32768
+transformer_encoder.layers.1.linear1.bias: shape=(256,) params=256
+transformer_encoder.layers.1.linear2.weight: shape=(128, 256) params=32768
+transformer_encoder.layers.1.linear2.bias: shape=(128,) params=128
+transformer_encoder.layers.1.norm1.weight: shape=(128,) params=128
+transformer_encoder.layers.1.norm1.bias: shape=(128,) params=128
+transformer_encoder.layers.1.norm2.weight: shape=(128,) params=128
+transformer_encoder.layers.1.norm2.bias: shape=(128,) params=128
+transformer_encoder.layers.2.self_attn.in_proj_weight: shape=(384, 128) params=49152
+transformer_encoder.layers.2.self_attn.in_proj_bias: shape=(384,) params=384
+transformer_encoder.layers.2.self_attn.out_proj.weight: shape=(128, 128) params=16384
+transformer_encoder.layers.2.self_attn.out_proj.bias: shape=(128,) params=128
+transformer_encoder.layers.2.linear1.weight: shape=(256, 128) params=32768
+transformer_encoder.layers.2.linear1.bias: shape=(256,) params=256
+transformer_encoder.layers.2.linear2.weight: shape=(128, 256) params=32768
+transformer_encoder.layers.2.linear2.bias: shape=(128,) params=128
+transformer_encoder.layers.2.norm1.weight: shape=(128,) params=128
+transformer_encoder.layers.2.norm1.bias: shape=(128,) params=128
+transformer_encoder.layers.2.norm2.weight: shape=(128,) params=128
+transformer_encoder.layers.2.norm2.bias: shape=(128,) params=128
+transformer_encoder.layers.3.self_attn.in_proj_weight: shape=(384, 128) params=49152
+transformer_encoder.layers.3.self_attn.in_proj_bias: shape=(384,) params=384
+transformer_encoder.layers.3.self_attn.out_proj.weight: shape=(128, 128) params=16384
+transformer_encoder.layers.3.self_attn.out_proj.bias: shape=(128,) params=128
+transformer_encoder.layers.3.linear1.weight: shape=(256, 128) params=32768
+transformer_encoder.layers.3.linear1.bias: shape=(256,) params=256
+transformer_encoder.layers.3.linear2.weight: shape=(128, 256) params=32768
+transformer_encoder.layers.3.linear2.bias: shape=(128,) params=128
+transformer_encoder.layers.3.norm1.weight: shape=(128,) params=128
+transformer_encoder.layers.3.norm1.bias: shape=(128,) params=128
+transformer_encoder.layers.3.norm2.weight: shape=(128,) params=128
+transformer_encoder.layers.3.norm2.bias: shape=(128,) params=128
+concat3._layer.weight: shape=(64, 128) params=8192
+concat3._hyper_bias.weight: shape=(64, 128) params=8192
+concat3._hyper_gate.weight: shape=(64, 128) params=8192
+concat3._hyper_gate.bias: shape=(64,) params=64
+concat4._layer.weight: shape=(32, 64) params=2048
+concat4._hyper_bias.weight: shape=(32, 128) params=4096
+concat4._hyper_gate.weight: shape=(32, 128) params=4096
+concat4._hyper_gate.bias: shape=(32,) params=32
+linear._layer.weight: shape=(4, 32) params=128
+linear._hyper_bias.weight: shape=(4, 128) params=512
+linear._hyper_gate.weight: shape=(4, 128) params=512
+linear._hyper_gate.bias: shape=(4,) params=4
+Total params: 759204
+
+=== social_phi.pt ===
+net.0.weight: shape=(64, 64) params=4096
+net.0.bias: shape=(64,) params=64
+net.2.weight: shape=(64, 64) params=4096
+net.2.bias: shape=(64,) params=64
+net.4.weight: shape=(1, 64) params=64
+net.4.bias: shape=(1,) params=1
+Total params: 8385

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Logs and generated outputs
+runs/
+run/
+result/
+results/
+logs/
+*.log
+events.out.tfevents*
+.public_export/
+
+# Model checkpoints and generated binary artifacts
+*.pt
+*.pth
+*.ckpt
+*.pkl
+!**/data/sample_data.pkl
+!**/data/sample_data_with_speed.pkl
+
+# Local credentials
+myssh
+myssh.pub
+*.pem
+*.key
+id_rsa*
+id_ed25519*
