@@ -50,10 +50,10 @@ def run
         log_dir = args.resume_dir
     else :
         run_name = f"main2_{exp_name}_{time_str}"
-        log_dir = os.path   路径.join(base_log_dir, run_name)
+        log_dir = os.path.join(base_log_dir, run_name)
     writer = SummaryWriter(log_dir=log_dir) 
-    checkpoints_dir = os.path   路径.join(log_dir, "checkpoints")
-    expert_data_path = os.path   路径.join   加入(log_dir, "expert_data.pkl")
+    checkpoints_dir = os.path.join(log_dir, "checkpoints")
+    expert_data_path = os.path.join   加入(log_dir, "expert_data.pkl")
     os.makedirs(checkpoints_dir, exist_ok=True) 
     print(f">>> TensorBoard Logging to: {log_dir}")
     # ==========================================================
@@ -108,7 +108,7 @@ def run
             {'params': disc_fv.private_g.parameters()},   # FV 私有奖励网络
             {'params': disc_fv.h.parameters()},           # FV 值函数网络
             {'params': [disc_fv.alpha]},                  # FV 势场权重
-            {'params': social_phi_net.parameters()}       # 共享社会势场，仅加入一次
+            {'params': social_phi_net.parameters()}       # 共享社会势场
         ], lr=3e-4)
 
     else: 
@@ -221,7 +221,7 @@ def run
 
     while i_episode <= 110000:
         obs = env.reset(scene_id=scene_id)
-        hist_buf = init_history(obs)  # 历史缓冲（若关闭历史，则内部只重复当前帧）
+        hist_buf = init_history(obs)  # 历史缓冲
         state = stack_history(hist_buf)
         current_ep_reward = 0
 
@@ -307,7 +307,7 @@ def run
                     continue
 
                 with torch.no_grad():
-                    log_pis_exp_lcv, _, _ = model_lcv.policy.evaluate   评估(states_exp, actions_exp[:, :2])
+                    log_pis_exp_lcv, _, _ = model_lcv.policy.evaluate(states_exp, actions_exp[:, :2])
                     log_pis_exp_fv, _, _ = model_fv.policy.evaluate(states_exp, actions_exp[:, 2:])
                     if has_invalid("log_pis_exp_lcv", log_pis_exp_lcv) or has_invalid("log_pis_exp_fv", log_pis_exp_fv):
                         continue
