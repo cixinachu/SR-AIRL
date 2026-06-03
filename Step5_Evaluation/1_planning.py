@@ -8,8 +8,8 @@ from itertools import product
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from torch.serialization import add_safe_globals  # 允许安全反序列化自定义类
-from torch.utils.tensorboard import SummaryWriter  # TensorBoard 记录
+from torch.serialization import add_safe_globals 
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 # ensure project root (Diff-LC) is on sys.path for package imports
@@ -78,7 +78,6 @@ def simulation(cond, planned_traj):
 
 
 device = 'cuda'
-# 统一日志/结果目录，优先使用 0_main 传入的环境变量
 log_dir = Path(os.environ.get("EVAL_LOG_DIR", Path(__file__).resolve().parent / "run" / "eval" / "debug2"))
 results_dir = Path(os.environ.get("EVAL_RESULTS_DIR", log_dir / "results"))
 os.makedirs(results_dir, exist_ok=True)
@@ -111,12 +110,11 @@ dataset = SequenceDataset(data_path, horizon=100, if_test=True)
 diffusion_parm = torch.load(path)
 diffusion.load_state_dict(diffusion_parm['ema'])
 policy = Policy(diffusion, None)
-# 安全加载目标预测器（权重可信前提下允许自定义类）
 add_safe_globals([GoalPredictor])
 goal_predictor = torch.load(goal_path, map_location=device, weights_only=False).to(device)
 
 all_data = {}
-total_candidates = 0  # 统计生成的规划候选数
+total_candidates = 0 
 
 for traj_id in tqdm(range(53)):
     all_data[traj_id] = {}
@@ -160,23 +158,19 @@ for traj_id in tqdm(range(53)):
 
     for final_pos in potent_cond:
         cond[99] = torch.tensor(list(final_pos[0] + final_pos[1])).to(device).unsqueeze(0)
-        # 1) 常规规划输出（用于后续模拟）
         _, planned_traj = policy(cond, batch_size=1)
-        # 2) 额外保存扩散反向链条（真实每步 x_t），便于可视化
         sample_with_chain = diffusion.conditional_sample(cond, return_chain=True, sample_fn=default_sample_fn)
         plan_res = simulation(cond, planned_traj)
         plan_res[:, 0] += true_y[0, :]
         plan_res[:, 1] += true_x[0, :]
         all_data[traj_id]['planned'].append(plan_res)
         if sample_with_chain.chains is not None:
-            # (B, n_steps+1, T, transition_dim) -> 去掉 batch 维度并转 CPU
             all_data[traj_id]['chains'].append(sample_with_chain.chains[0].detach().cpu())
         total_candidates += 1
 
 with open(results_dir / 'plan_data.pkl', 'wb') as path:
     pickle.dump(all_data, path)
 
-# 简要记录到 TensorBoard，便于后续步骤查看
 writer.add_scalar('planning/num_traj', len(all_data), 0)
 writer.add_scalar('planning/num_candidates', total_candidates, 0)
 writer.close()
