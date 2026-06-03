@@ -56,8 +56,8 @@ class Trainer(object):
         results_folder='./results',
         n_reference=8,
         bucket=None,
-        writer=None,  # 新增：可选 TensorBoard Writer，与 train.py 保持同一目录
-        save_last_only=True,  # 新增：仅保存最后一次模型的开关，True 时禁用中途多次保存
+        writer=None, 
+        save_last_only=True, 
         use_dppo=True,
         dppo_coef=0.0,
         ppo_clip=0.2,
@@ -89,9 +89,9 @@ class Trainer(object):
         self.logdir = results_folder
         self.bucket = bucket
         self.n_reference = n_reference
-        self.writer = writer  # 可为 None 时不写 TensorBoard
-        self.save_last_only = save_last_only  # 控制是否只在训练结束保存一次
-        # DPPO 超参
+        self.writer = writer 
+        self.save_last_only = save_last_only 
+
         self.use_dppo = use_dppo
         self.dppo_coef = float(dppo_coef)
         self.dppo_coef_max = float(dppo_coef)
@@ -112,7 +112,7 @@ class Trainer(object):
             return
         self.ema.update_model_average(self.ema_model, self.model)
 
-    # ---------------- DPPO helpers ---------------- #
+
     def _pred_noise_from_output(self, x, t, model_out):
         diffusion = self.model
         if diffusion.predict_epsilon:
@@ -130,12 +130,6 @@ class Trainer(object):
 
     @torch.no_grad()
     def _denoising_rollout_old(self, cond, old_diffusion):
-        """
-        用旧策略（EMA）跑一条去噪链，构造 DPPO 的 (state, action, logp_old, reward) 序列。
-        state: x_t
-        action: x_{t-1}
-        reward: -||eps_pred - z||^2
-        """
         diffusion = self.model
         device = next(old_diffusion.parameters()).device
         first_cond = next(iter(cond.values()))
@@ -194,10 +188,6 @@ class Trainer(object):
         return adv
 
     def _compute_traj_adv(self, rewards):
-        """
-        轨迹级优势：只用 G_0 标准化。
-        rewards: (B, T)
-        """
         B, T = rewards.shape
         G = torch.zeros(B, device=rewards.device, dtype=rewards.dtype)
         for k in reversed(range(T)):
@@ -226,11 +216,9 @@ class Trainer(object):
 
         diffusion = self.model
 
-        # 旧策略整条轨迹 logprob
         logp_old_seq = torch.stack([s["logp_old"] for s in steps], dim=1)  # (B, T)
         logp_old_traj = logp_old_seq.sum(dim=1)                            # (B,)
 
-        # 新策略 replay
         x = rollout["x_T"]
         x = apply_conditioning(x, cond, diffusion.action_dim)
         logp_new_list = []
@@ -261,10 +249,6 @@ class Trainer(object):
         ppo_loss = -torch.mean(torch.min(surr1, surr2))
 
         return ppo_loss
-
-    #-----------------------------------------------------------------------------#
-    #------------------------------------ api ------------------------------------#
-    #-----------------------------------------------------------------------------#
 
     def train(self, n_train_steps):
 
@@ -298,46 +282,34 @@ class Trainer(object):
             if self.step % self.update_ema_every == 0:
                 self.step_ema()
 
-            # if self.step % self.save_freq == 0:  # 旧逻辑：周期性保存（已由 save_last_only 开关控制）
-            #     label = self.step // self.save_freq
-            #     self.save(label)
-            #     # if label == 7:
-            #     #     break
             if (not self.save_last_only) and self.step % self.save_freq == 0:
                 label = self.step // self.save_freq
-                self.save(label)  # 在 save_last_only=False 时才按周期保存
+                self.save(label) 
 
             if self.step % self.log_freq == 0:
                 infos_str = ' | '.join([f'{key}: {val:8.4f}' for key, val in infos.items()])
-                step_time = timer()  # 记录本次 log 周期耗时
+                step_time = timer() 
                 print_str = f'{self.step}: {loss_total_val:8.4f} | {infos_str} | '
                 print_str += f'bc {loss_bc_val:8.4f}'
                 if loss_dppo_val is not None:
                     print_str += f' | dppo {loss_dppo_val:8.4f}'
                 print_str += f' | t: {step_time:8.4f}'
                 print(print_str, flush=True)
-                # 同步到 TensorBoard，与 train.py 在同一 log_dir
                 if self.writer is not None:
                     self.writer.add_scalar('train/loss', loss_total_val, self.step)
                     self.writer.add_scalar('train/loss_bc', loss_bc_val, self.step)
                     if loss_dppo_val is not None:
                         self.writer.add_scalar('train/loss_dppo', loss_dppo_val, self.step)
-                    for key, val in infos.items():  # 修正缩进，确保逐项写入
+                    for key, val in infos.items():
                         self.writer.add_scalar(f'train/{key}', val, self.step)
-                    self.writer.add_scalar('train/time_per_log', step_time, self.step)  # 记录 timer 指标
+                    self.writer.add_scalar('train/time_per_log', step_time, self.step)
 
             self.step += 1
 
-        # 仅保存最后一次模型（当 save_last_only=True 时启用）
         if self.save_last_only:
-            self.save('final')  # 始终使用同名文件，自动覆盖上次训练的最终模型
+            self.save('final')  
 
     def save(self, epoch):
-        '''
-            saves model and ema to disk;
-            syncs to storage bucket if a bucket is specified
-        '''
-        # 确保存储目录存在，避免父目录缺失导致 torch.save 报错
         os.makedirs(self.logdir, exist_ok=True)
         data = {
             'step': self.step,
@@ -351,9 +323,6 @@ class Trainer(object):
             sync_logs(self.logdir, bucket=self.bucket, background=self.save_parallel)
 
     def load(self, epoch):
-        '''
-            loads model and ema from disk
-        '''
         loadpath = os.path.join(self.logdir, f'state_{epoch}.pt')
         data = torch.load(loadpath)
 
