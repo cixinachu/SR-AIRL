@@ -13,7 +13,6 @@ import time
 import sys
 from pathlib import Path
 base_dir = Path(__file__).resolve().parent
-# 确保本地 utils 可被导入（避免相对路径运行时报 ModuleNotFoundError）
 sys.path.append(str(base_dir))
 from utils.dataset import data_loader
 import random
@@ -111,7 +110,6 @@ def eval(args, loader, sampler, model, guide, writer=None, epoch=None):
                                                                                                 np.mean(ade_list_3s),
                                                                                                 np.mean(ade_list_4s),
                                                                                                 np.mean(ade_list_5s)))
-    # 将评估指标写入 TensorBoard，便于命令行输出与曲线对齐
     if writer is not None and epoch is not None:
         writer.add_scalar('val/ade', np.mean(ade_list), epoch)
         writer.add_scalar('val/ade_1s', np.mean(ade_list_1s), epoch)
@@ -130,18 +128,10 @@ def train(args):
 
     model = TransformerConcatLinear(args.context_dim, args.T)
     ema_model = copy.deepcopy(model)
-    # 安全加载指导奖励模型；权重来源 Step3_Reward_Guide 的最优模型
     from torch.serialization import add_safe_globals
-    from model.backbone import NoisyReward  # 允许反序列化该类
-    add_safe_globals([NoisyReward])  # 权重可信时加入允许列表
-    #guide_path = Path(__file__).resolve().parent.parent / "Step3_Reward_Guide" / "runs" / "planner_goal" / "train_20251201-115337" / "results" / "best_model.pth"
+    from model.backbone import NoisyReward  
+    add_safe_globals([NoisyReward])  
     guide_path = Path(__file__).resolve().parent.parent / "Step3_Reward_Guide" / "runs" / "planner_goal" / "train_20251216-113429" / "results" / "best_model.pth"
-
-
-    #guide_path = Path(__file__).resolve().parent.parent / "Step3_Reward_Guide" / "runs" / "planner_goal" / "train_20251216-113742" / "results" / "best_model.pth"
-    #guide_path = Path(__file__).resolve().parent.parent / "Step3_Reward_Guide" / "runs" / "planner_goal" / "train_20251216-113843" / "results" / "best_model.pth"
-    #guide_path = Path(__file__).resolve().parent.parent / "Step3_Reward_Guide" / "runs" / "planner_goal" / "train_20251216-113937" / "results" / "best_model.pth"
-    #guide_path = Path(__file__).resolve().parent.parent / "Step3_Reward_Guide" / "runs" / "planner_goal" / "train_20251216-114036" / "results" / "best_model.pth"
     guide = torch.load(guide_path, map_location=device, weights_only=False).to(device)
 
     # show model size
@@ -167,10 +157,9 @@ def train(args):
 
     best_ade = 1e5
 
-    # 统一日志与模型保存目录（runs/predictor 下每次一个时间戳子目录）
     base_dir = Path(__file__).resolve().parent
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_dir = base_dir / "run" / "predictor" / f"train_{time_str}"  # 路径改为 run/...
+    log_dir = base_dir / "run" / "predictor" / f"train_{time_str}"
     writer = SummaryWriter(log_dir=str(log_dir))
     print(f">>> TensorBoard logging to: {log_dir}")
     results_dir = log_dir / "results"
@@ -207,23 +196,20 @@ def train(args):
 
         if epoch % args.print_step == 0:
             print('Epoch {}, loss {:.6f}, lr {}'.format(epoch, np.mean(epoch_loss), cur_lr))
-            # 训练指标写入 TensorBoard
             writer.add_scalar('train/loss', np.mean(epoch_loss), epoch)
             writer.add_scalar('train/lr', cur_lr, epoch)
 
         if epoch % args.sample_step == 0:
             val_ade = eval(args, test_loader, ema_sampler, ema_model, guide, writer=writer, epoch=epoch)
-            # writer.add_scalar('val/ade', val_ade, epoch)  # 旧单指标记录（已由 eval 内多指标记录替代）
+            # writer.add_scalar('val/ade', val_ade, epoch)
 
             if val_ade < best_ade:
                 best_ade = val_ade
                 print('Best model updated, testing ...')
                 eval(args, test_loader, ema_sampler, ema_model, guide, writer=writer, epoch=epoch)
-
-                # 保存最佳模型到当前日志目录的 results 下（仅保留最新最优）
                 torch.save(ema_model, results_dir / 'best_model.pth')
 
-    writer.close()  # 训练结束关闭日志
+    writer.close() 
 
 
 def main(args):
