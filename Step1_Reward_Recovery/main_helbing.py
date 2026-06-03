@@ -21,11 +21,11 @@ warnings.filterwarnings('ignore')
 
 def run  
     parser = argparse.ArgumentParser()
-    parser.add_argument("--resume_dir", type=str, default=None   无,
+    parser.add_argument("--resume_dir", type=str, default=None,
                         help="继续训练的日志目录（包含 checkpoints 子目录）")
-    parser.add_argument("--start_episode", type=int, default=None   无,
+    parser.add_argument("--start_episode", type=int, default=None,
                         help="手动指定起始 episode（如无 state 文件时使用）")
-    parser.add_argument("--start_step", type=int, default=None   无,
+    parser.add_argument("--start_step", type=int, default=None,
                         help="手动指定起始 time_step（如无 state 文件时使用）")
     args = parser.parse_args()
 
