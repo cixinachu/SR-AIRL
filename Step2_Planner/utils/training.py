@@ -56,8 +56,8 @@ class Trainer(object):
         results_folder='./results',
         n_reference=8,
         bucket=None,
-        writer=None, 
-        save_last_only=True, 
+        writer=None,  # 新增：可选 TensorBoard Writer，与 train.py 保持同一目录
+        save_last_only=True,  # 新增：仅保存最后一次模型的开关，True 时禁用中途多次保存
         use_dppo=True,
         dppo_coef=0.0,
         ppo_clip=0.2,
@@ -89,9 +89,9 @@ class Trainer(object):
         self.logdir = results_folder
         self.bucket = bucket
         self.n_reference = n_reference
-        self.writer = writer 
-        self.save_last_only = save_last_only 
-
+        self.writer = writer  # 可为 None 时不写 TensorBoard
+        self.save_last_only = save_last_only  # 控制是否只在训练结束保存一次
+        # DPPO 超参
         self.use_dppo = use_dppo
         self.dppo_coef = float(dppo_coef)
         self.dppo_coef_max = float(dppo_coef)
@@ -112,14 +112,19 @@ class Trainer(object):
             return
         self.ema.update_model_average(self.ema_model, self.model)
 
-
-    def _pred_noise_from_output(self, x, t, model_out):
+    # ---------------- DPPO helpers ---------------- #
+    def _deterministic_prev(self, x_t, pred_x0, t):
         diffusion = self.model
-        if diffusion.predict_epsilon:
-            return model_out
-        coef1 = extract(diffusion.sqrt_recip_alphas_cumprod, t, x.shape)
-        coef2 = extract(diffusion.sqrt_recipm1_alphas_cumprod, t, x.shape)
-        return (coef1 * x - model_out) / (coef2 + 1e-8)
+        alpha_bar_t = extract(diffusion.alphas_cumprod, t, x_t.shape)
+        eps = (x_t - torch.sqrt(alpha_bar_t) * pred_x0) / torch.sqrt(
+            1.0 - alpha_bar_t + 1e-8
+        )
+        t_prev = torch.clamp(t - 1, min=0)
+        alpha_bar_prev = extract(diffusion.alphas_cumprod, t_prev, x_t.shape)
+        return (
+            torch.sqrt(alpha_bar_prev) * pred_x0
+            + torch.sqrt(1.0 - alpha_bar_prev) * eps
+        )
 
     def _gaussian_logprob_xprev(self, x_prev, mean, logvar):
         # log N(x_prev; mean, diag(exp(logvar))) -> (B,)
@@ -130,7 +135,15 @@ class Trainer(object):
 
     @torch.no_grad()
     def _denoising_rollout_old(self, cond, old_diffusion):
+        """
+        用旧策略（EMA）跑一条去噪链，构造 DPPO 的 (state, action, logp_old, reward) 序列。
+        state: x_t
+        action: x_{t-1}
+        reward: negative cross-step x0 prediction consistency error (zero at t=0)
+        """
         diffusion = self.model
+        if diffusion.predict_epsilon or old_diffusion.predict_epsilon:
+            raise ValueError("DPPO consistency rollout requires predict_epsilon=False")
         device = next(old_diffusion.parameters()).device
         first_cond = next(iter(cond.values()))
         B = first_cond.shape[0]
@@ -144,8 +157,10 @@ class Trainer(object):
             t = make_timesteps(B, i, device)
 
             model_out = old_diffusion.model(x, cond, t)
-            mean, _ = old_diffusion.mean_processor.get_mean_and_xstart(x, t, model_out)
-            var, logvar = old_diffusion.var_processor.get_variance(model_out, t)
+            pred_x0_t = model_out  # predict_epsilon=False
+            mean, var, logvar = old_diffusion.q_posterior(
+                x_start=pred_x0_t, x_t=x, t=t,
+            )
             logvar = torch.clamp(logvar, -20.0, 2.0)
             std = torch.exp(0.5 * logvar)
 
@@ -157,9 +172,12 @@ class Trainer(object):
             x_prev = apply_conditioning(x_prev, cond, diffusion.action_dim)
 
             logp_old = self._gaussian_logprob_xprev(x_prev, mean, logvar)
-            eps_pred = self._pred_noise_from_output(x, t, model_out)
-            r_t = -((eps_pred - z) ** 2).flatten(1).mean(dim=1)
-            r_t = torch.clamp(r_t, -10.0, 0.0)
+            x_prev_det = self._deterministic_prev(x, pred_x0_t, t)
+            t_prev = torch.clamp(t - 1, min=0)
+            pred_x0_prev = old_diffusion.model(x_prev_det, cond, t_prev)
+            cons_error = (pred_x0_t - pred_x0_prev.detach()).pow(2).flatten(1).mean(dim=1)
+            r_t = -cons_error
+            r_t[t == 0] = 0.0
 
             steps.append({
                 "t": t.detach(),
@@ -188,6 +206,10 @@ class Trainer(object):
         return adv
 
     def _compute_traj_adv(self, rewards):
+        """
+        轨迹级优势：只用 G_0 标准化。
+        rewards: (B, T)
+        """
         B, T = rewards.shape
         G = torch.zeros(B, device=rewards.device, dtype=rewards.dtype)
         for k in reversed(range(T)):
@@ -216,9 +238,11 @@ class Trainer(object):
 
         diffusion = self.model
 
+        # 旧策略整条轨迹 logprob
         logp_old_seq = torch.stack([s["logp_old"] for s in steps], dim=1)  # (B, T)
         logp_old_traj = logp_old_seq.sum(dim=1)                            # (B,)
 
+        # 新策略 replay
         x = rollout["x_T"]
         x = apply_conditioning(x, cond, diffusion.action_dim)
         logp_new_list = []
@@ -228,8 +252,9 @@ class Trainer(object):
             x_prev = s_k["x_prev"]
 
             model_out_new = diffusion.model(x, cond, t)
-            mean_new, _ = diffusion.mean_processor.get_mean_and_xstart(x, t, model_out_new)
-            _, logvar_new = diffusion.var_processor.get_variance(model_out_new, t)
+            mean_new, _, logvar_new = diffusion.q_posterior(
+                x_start=model_out_new, x_t=x, t=t,
+            )
             logvar_new = torch.clamp(logvar_new, -20.0, 2.0)
             logp_new = self._gaussian_logprob_xprev(x_prev, mean_new, logvar_new)
             logp_new_list.append(logp_new)
@@ -249,6 +274,10 @@ class Trainer(object):
         ppo_loss = -torch.mean(torch.min(surr1, surr2))
 
         return ppo_loss
+
+    #-----------------------------------------------------------------------------#
+    #------------------------------------ api ------------------------------------#
+    #-----------------------------------------------------------------------------#
 
     def train(self, n_train_steps):
 
@@ -282,34 +311,46 @@ class Trainer(object):
             if self.step % self.update_ema_every == 0:
                 self.step_ema()
 
+            # if self.step % self.save_freq == 0:  # 旧逻辑：周期性保存（已由 save_last_only 开关控制）
+            #     label = self.step // self.save_freq
+            #     self.save(label)
+            #     # if label == 7:
+            #     #     break
             if (not self.save_last_only) and self.step % self.save_freq == 0:
                 label = self.step // self.save_freq
-                self.save(label) 
+                self.save(label)  # 在 save_last_only=False 时才按周期保存
 
             if self.step % self.log_freq == 0:
                 infos_str = ' | '.join([f'{key}: {val:8.4f}' for key, val in infos.items()])
-                step_time = timer() 
+                step_time = timer()  # 记录本次 log 周期耗时
                 print_str = f'{self.step}: {loss_total_val:8.4f} | {infos_str} | '
                 print_str += f'bc {loss_bc_val:8.4f}'
                 if loss_dppo_val is not None:
                     print_str += f' | dppo {loss_dppo_val:8.4f}'
                 print_str += f' | t: {step_time:8.4f}'
                 print(print_str, flush=True)
+                # 同步到 TensorBoard，与 train.py 在同一 log_dir
                 if self.writer is not None:
                     self.writer.add_scalar('train/loss', loss_total_val, self.step)
                     self.writer.add_scalar('train/loss_bc', loss_bc_val, self.step)
                     if loss_dppo_val is not None:
                         self.writer.add_scalar('train/loss_dppo', loss_dppo_val, self.step)
-                    for key, val in infos.items():
+                    for key, val in infos.items():  # 修正缩进，确保逐项写入
                         self.writer.add_scalar(f'train/{key}', val, self.step)
-                    self.writer.add_scalar('train/time_per_log', step_time, self.step)
+                    self.writer.add_scalar('train/time_per_log', step_time, self.step)  # 记录 timer 指标
 
             self.step += 1
 
+        # 仅保存最后一次模型（当 save_last_only=True 时启用）
         if self.save_last_only:
-            self.save('final')  
+            self.save('final')  # 始终使用同名文件，自动覆盖上次训练的最终模型
 
     def save(self, epoch):
+        '''
+            saves model and ema to disk;
+            syncs to storage bucket if a bucket is specified
+        '''
+        # 确保存储目录存在，避免父目录缺失导致 torch.save 报错
         os.makedirs(self.logdir, exist_ok=True)
         data = {
             'step': self.step,
@@ -323,9 +364,13 @@ class Trainer(object):
             sync_logs(self.logdir, bucket=self.bucket, background=self.save_parallel)
 
     def load(self, epoch):
+        '''
+            loads model and ema from disk
+        '''
         loadpath = os.path.join(self.logdir, f'state_{epoch}.pt')
         data = torch.load(loadpath)
 
         self.step = data['step']
         self.model.load_state_dict(data['model'])
         self.ema_model.load_state_dict(data['ema'])
+
