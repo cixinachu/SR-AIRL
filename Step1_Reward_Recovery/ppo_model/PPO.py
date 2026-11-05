@@ -33,43 +33,49 @@ class RolloutBuffer:
         return torch.concatenate(self.states), torch.concatenate(self.actions), \
                torch.tensor(self.is_terminals), torch.concatenate(self.logprobs), torch.concatenate(self.next_states)
 
-    def _stack_history(self, tensor, history_len):
+    def _stack_history(self, tensor, dones, history_len):
         """
-        简单帧堆叠工具：将 (N, D) 转为 (N, history_len*D)，用首帧重复进行 padding。
+        将 (N, D) 转为 (N, history_len*D)，在轨迹起点重复首帧 padding。
+        ``dones[i - 1]`` 表示第 i 个状态属于一条新轨迹，因此不会将上一条
+        换道轨迹末尾帧泄漏到新轨迹的 history 中。
         """
         if history_len <= 1:
             return tensor
-        stacked = []
-        for i in range(tensor.shape[0]):
-            start = max(0, i - history_len + 1)
-            slice_ = tensor[start:i+1]
-            if slice_.shape[0] < history_len:
-                pad = tensor[0:1].repeat(history_len - slice_.shape[0], 1)
-                slice_ = torch.cat([pad, slice_], dim=0)
-            stacked.append(slice_.reshape(1, -1))
-        return torch.cat(stacked, dim=0)
+        windows, history = [], []
+        for t in range(len(tensor)):
+            if t == 0 or bool(dones[t - 1].item()):
+                history = []
+            history.append(tensor[t])
+            history = history[-history_len:]
+            windows.append(torch.cat([history[0]] * (history_len - len(history)) + history, dim=-1))
+        return torch.stack(windows, dim=0)
 
     def add_exp(self, path, use_history=False, history_len=1):
         with open(path, "rb") as input_file:
             tmp = pickle.load(input_file)
-        self.device = device
-
-        states = tmp['state'].clone().to(self.device)
-        actions = tmp['action'].clone().to(self.device)
-        rewards = tmp['rewards'].clone().to(self.device)
-        dones = tmp['dones'].clone().to(self.device)
-        next_states = tmp['next_states'].clone().to(self.device)
+        states = tmp['state'].float().cpu()
+        actions = tmp['action'].float().cpu()
+        rewards = tmp['rewards'].float().cpu()
+        dones = tmp['dones'].float().cpu()
+        next_states = tmp['next_states'].float().cpu()
 
         if use_history and history_len > 1:
             # 对专家数据做帧堆叠，保证与训练时的历史形状一致
-            states = self._stack_history(states, history_len)
-            next_states = self._stack_history(next_states, history_len)
+            stacked_states = self._stack_history(states, dones, history_len)
+            stacked_next_states = torch.cat([stacked_states[:, 16:], next_states], dim=-1)
+            # A terminal transition cannot borrow pre-terminal frames for a
+            # new scene's next state.
+            terminal = dones.reshape(-1).bool()
+            if terminal.any():
+                stacked_next_states[terminal] = next_states[terminal].repeat(1, history_len)
+        else:
+            stacked_states, stacked_next_states = states, next_states
 
-        self.states = states
-        self.actions = actions
-        self.rewards = rewards
-        self.is_terminals = dones
-        self.next_states = next_states
+        self.states = stacked_states.to(device)
+        self.actions = actions.to(device)
+        self.rewards = rewards.to(device)
+        self.is_terminals = dones.to(device)
+        self.next_states = stacked_next_states.to(device)
 
     def sample(self, batch_size, if_exp=False):
         idxes = np.random.randint(low=0, high=len(self.actions), size=batch_size)
@@ -377,5 +383,6 @@ class PPO:
         
         
        
+
 
 

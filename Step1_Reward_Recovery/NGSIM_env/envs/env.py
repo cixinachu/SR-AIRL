@@ -262,10 +262,14 @@ class NGSIMEnv(AbstractEnv):
         """
         return self.steps > self.duration - 2
 
-    def generate_experts(self, save_path=None):
+    def generate_experts(self, save_path=None, scene_ids=None):
         expert_dict = {'state': [], 'action': [], 'rewards': [], 'dones': [], 'next_states': []}
 
-        for scene_id in range(150):
+        # Keep the default expert corpus strictly in the training split.  Validation
+        # and test scenes must never enter adversarial reward training.
+        if scene_ids is None:
+            scene_ids = range(100)
+        for scene_id in scene_ids:
             state = self.reset(scene_id=scene_id)
             lcv_trajectory = self.lcv_trajectory[['y', 'x', 'laneId', 'v_x', 'v_y', 'a_x', 'a_y']]
             lcv_trajectory = lcv_trajectory.values
@@ -294,5 +298,6 @@ class NGSIMEnv(AbstractEnv):
         out_path = save_path if save_path is not None else 'expert_data.pkl'
         with open(out_path, 'wb') as path:
             pickle.dump(expert_dict, path)
+
 
 

@@ -68,8 +68,8 @@ def eval(args, loader, trainer, model, fv_reward):
 def train(args):
     device = args.device
 
-    model = NoisyReward(args.context_dim, args.T)
-    ema_model = copy.deepcopy(model)
+    model = NoisyReward(args.context_dim, args.T).to(device)
+    ema_model = copy.deepcopy(model).to(device)
     guide = None
 
     # show model size
@@ -89,21 +89,14 @@ def train(args):
                                save_path='data/sample_data.pkl', if_test='train')
     test_loader = data_loader(args.obs_len, args.pred_len_val, args.skip, args.batch_size * 4, val_path,
                               shuffle=False, save_path='data/sample_data.pkl', if_test='test')
-    # 安全加载判别器奖励网络（路径指向 Step1_Reward_Recovery/disc_fv.pt）
-    from torch.serialization import add_safe_globals
     sys.path.append(str(base_dir.parent / "Step1_Reward_Recovery"))  # 允许导入 AIRL 判别器定义
-    from airl import AIRLDiscrim, SocialAIRLDiscrim, SocialPotentialNet  # noqa: E402
-    add_safe_globals([AIRLDiscrim, SocialAIRLDiscrim, SocialPotentialNet])  # 仅在信任权重文件的前提下允许反序列化该类
-    # 如果文件放在训练日志目录下，更新为实际保存路径
-    # disc_path = base_dir.parent / "Step1_Reward_Recovery" / "runs" / "log" / "reward_recovery" / "main1_20251124-212403" / "checkpoints" / "disc_fv.pt"
-    # disc_path = base_dir.parent / "Step1_Reward_Recovery" / "runs" / "log" / "reward_recovery" / "main1_20251210-232617" / "checkpoints" / "disc_fv.pt"
-    # disc_path = base_dir.parent / "Step1_Reward_Recovery" / "runs" / "log" / "reward_recovery_new" / "main2_SocialAIRL_20251211-100531" / "checkpoints" / "disc_fv.pt"
-    # disc_path = base_dir.parent / "Step1_Reward_Recovery" / "runs" / "log" / "reward_recovery_new" / "main2_SocialAIRL_20251211-100547" / "checkpoints" / "disc_fv.pt"
-    # disc_path = base_dir.parent / "Step1_Reward_Recovery" / "runs" / "log" / "reward_recovery_new" / "main2_SocialAIRL_20251211-100746" / "checkpoints" / "disc_fv.pt"
-    disc_path = base_dir.parent / "Step1_Reward_Recovery" / "runs" / "log" / "reward_recovery_new" / "main2_SocialAIRL_20251211-101331" / "checkpoints" / "disc_fv.pt"
-
-    # fv_reward = torch.load(disc_path, map_location=device, weights_only=False).g  # 原版 AIRL 判别器仅用私有奖励
-    disc = torch.load(disc_path, map_location=device, weights_only=False)
+    from airl import AnisotropicInteractionPotential, SocialAIRLDiscrim  # noqa: E402
+    from reward_config import HISTORY_LEN, GAMMA, L_LONG, L_LAT, DIR_LAMBDA  # noqa: E402
+    checkpoint = torch.load(args.disc_path, map_location=device, weights_only=True)
+    interaction = AnisotropicInteractionPotential(L_LONG, L_LAT, DIR_LAMBDA).to(device)
+    disc = SocialAIRLDiscrim(16 * HISTORY_LEN, GAMMA, interaction, 'fv', HISTORY_LEN).to(device)
+    disc.load_state_dict(checkpoint)
+    disc.eval()
 
     def _infer_hist_len(disc_obj):
         if hasattr(disc_obj, "history_len"):
@@ -209,6 +202,9 @@ def train(args):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optim.step()
+            with torch.no_grad():
+                for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+                    ema_param.mul_(args.ema_decay).add_(param, alpha=1.0 - args.ema_decay)
 
             epoch_loss.append(loss.item())
 
@@ -226,7 +222,7 @@ def train(args):
                 eval(args, test_loader, trainer, model, fv_reward)
 
                 # 保存到当前日志目录的 results 子目录
-                torch.save(ema_model, results_dir / 'best_model.pth')
+                torch.save({'model': ema_model.state_dict(), 'context_dim': args.context_dim, 'T': args.T}, results_dir / 'best_model.pt')
 
         # TensorBoard 记录训练/验证指标
         writer.add_scalar('train/loss', np.mean(epoch_loss), epoch)
@@ -245,6 +241,7 @@ if __name__ == "__main__":
     setup_seed(42)
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--disc_path', required=True, help='Step1 checkpoints/disc_fv.pt state dictionary')
 
     # Dataset
     parser.add_argument('--obs_len', type=int, default=20)
