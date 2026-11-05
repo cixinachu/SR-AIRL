@@ -21,13 +21,14 @@ def normalize_obs(df):
     return df
 
 def trajectory_process(trajectory, decision_time):
+    trajectory = trajectory.copy()
     trajectory.columns = ['frame', 'id', 'y', 'x', 'width', 'height', 'laneId']
-    trajectory['v_x'] = trajectory['x'].diff() / 0.1
-    trajectory['v_y'] = trajectory['y'].diff() / 0.1
-    trajectory['a_x'] = trajectory['v_x'].diff() / 0.1
-    trajectory['a_y'] = trajectory['v_y'].diff() / 0.1
+    trajectory.loc[:, 'v_x'] = trajectory['x'].diff() / 0.1
+    trajectory.loc[:, 'v_y'] = trajectory['y'].diff() / 0.1
+    trajectory.loc[:, 'a_x'] = trajectory['v_x'].diff() / 0.1
+    trajectory.loc[:, 'a_y'] = trajectory['v_y'].diff() / 0.1
 
-    trajectory = trajectory[trajectory['frame'] >= decision_time - 20]
+    trajectory = trajectory.loc[trajectory['frame'] >= decision_time - 20].copy()
 
     return trajectory
 
@@ -40,13 +41,14 @@ def build_trajecotry():
 
     record_trajectory = {'lcv': [], 'fv': [], 'nlv': [], 'olv': []}
 
-    for pair in data[150:]:
+    # Preserve global indexing; 3_evaluation selects TEST_SCENE_IDS explicitly.
+    for pair in data:
         end_frame = pair['end_frame'].values[0]
         decision_frame = pair['decision_frame'].values[0]
-        lcv = pair[['frame', 'id_x', 'y_x', 'x_x', 'width_x', 'height_x', 'laneId_x']].iloc[20:]
-        fv = pair[['frame', 'id_y', 'y_y', 'x_y', 'width_y', 'height_y', 'laneId_y']].iloc[20:]
-        nlv = pair[['frame', 'id', 'y', 'x', 'width', 'height', 'laneId']].iloc[20:]
-        olv = pair[['frame', 'id_z', 'y_z', 'x_z', 'width_z', 'height_z', 'laneId_z']].iloc[20:]
+        lcv = pair[['frame', 'id_x', 'y_x', 'x_x', 'width_x', 'height_x', 'laneId_x']].iloc[20:].copy()
+        fv = pair[['frame', 'id_y', 'y_y', 'x_y', 'width_y', 'height_y', 'laneId_y']].iloc[20:].copy()
+        nlv = pair[['frame', 'id', 'y', 'x', 'width', 'height', 'laneId']].iloc[20:].copy()
+        olv = pair[['frame', 'id_z', 'y_z', 'x_z', 'width_z', 'height_z', 'laneId_z']].iloc[20:].copy()
 
         lcv = trajectory_process(lcv, decision_frame)
         fv = trajectory_process(fv, decision_frame)
@@ -119,5 +121,6 @@ class AIRLDiscrim(nn.Module):
             logits = self.forward(states, dones, log_pis, next_states)
 
             return (torch.log(logits + 1e-3) - torch.log((1-logits)+1e-3))#-F.logsigmoid(-logits)
+
 
 

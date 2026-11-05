@@ -30,8 +30,12 @@ class RolloutBuffer:
         self.next_states = []
 
     def get(self):
-        return torch.concatenate(self.states), torch.concatenate(self.actions), \
-               torch.tensor(self.is_terminals), torch.concatenate(self.logprobs), torch.concatenate(self.next_states)
+        # select_action stores one [2] action and one scalar log probability
+        # per transition.  ``stack`` preserves the batch axis for both.
+        return (torch.cat(self.states, dim=0), torch.stack(self.actions, dim=0),
+                torch.as_tensor(self.is_terminals, device=device).reshape(-1),
+                torch.stack(self.logprobs, dim=0).reshape(-1),
+                torch.cat(self.next_states, dim=0))
 
     def _stack_history(self, tensor, dones, history_len):
         """
@@ -82,12 +86,12 @@ class RolloutBuffer:
 
         if not if_exp:
             return (
-                torch.concatenate(self.states)[idxes],
-                torch.concatenate(self.actions)[idxes],
-                torch.tensor(self.rewards)[idxes],
-                torch.tensor(self.is_terminals)[idxes],
-                torch.concatenate(self.logprobs)[idxes],
-                torch.concatenate(self.next_states)[idxes]
+                torch.cat(self.states, dim=0)[idxes],
+                torch.stack(self.actions, dim=0)[idxes],
+                torch.as_tensor(self.rewards, device=device).reshape(-1)[idxes],
+                torch.as_tensor(self.is_terminals, device=device).reshape(-1)[idxes],
+                torch.stack(self.logprobs, dim=0).reshape(-1)[idxes],
+                torch.cat(self.next_states, dim=0)[idxes]
             )
         else:
             return (

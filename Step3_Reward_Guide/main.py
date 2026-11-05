@@ -87,8 +87,8 @@ def train(args):
 
     train_loader = data_loader(args.obs_len, args.pred_len, args.skip, args.batch_size, path,
                                save_path='data/sample_data.pkl', if_test='train')
-    test_loader = data_loader(args.obs_len, args.pred_len_val, args.skip, args.batch_size * 4, val_path,
-                              shuffle=False, save_path='data/sample_data.pkl', if_test='test')
+    val_loader = data_loader(args.obs_len, args.pred_len_val, args.skip, args.batch_size * 4, val_path,
+                             shuffle=False, save_path='data/sample_data.pkl', if_test='val')
     sys.path.append(str(base_dir.parent / "Step1_Reward_Recovery"))  # 允许导入 AIRL 判别器定义
     from airl import AnisotropicInteractionPotential, SocialAIRLDiscrim  # noqa: E402
     from reward_config import HISTORY_LEN, GAMMA, L_LONG, L_LAT, DIR_LAMBDA  # noqa: E402
@@ -214,12 +214,12 @@ def train(args):
             print('Epoch {}, loss {:.6f}, lr {}'.format(epoch, np.mean(epoch_loss), cur_lr))
 
         if epoch % args.sample_step == 0:
-            val_ade = eval(args, test_loader, trainer, model, fv_reward)
+            val_ade = eval(args, val_loader, trainer, ema_model, fv_reward)
 
             if val_ade < best_ade:
                 best_ade = val_ade
                 print('Best model updated, testing ...')
-                eval(args, test_loader, trainer, model, fv_reward)
+                eval(args, val_loader, trainer, ema_model, fv_reward)
 
                 # 保存到当前日志目录的 results 子目录
                 torch.save({'model': ema_model.state_dict(), 'context_dim': args.context_dim, 'T': args.T}, results_dir / 'best_model.pt')

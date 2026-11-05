@@ -9,6 +9,13 @@ import pandas as pd
 from tqdm import tqdm
 import pickle
 import copy
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from common.scene_splits import split_scene_ids
 
 
 def normalize_obs(df):
@@ -42,13 +49,14 @@ def data_loader(obs_len, pred_len, skip, batch_size, path, shuffle=True, save_pa
 
 
 def trajectory_process(trajectory, decision_time):
+    trajectory = trajectory.copy()
     trajectory.columns = ['frame', 'id', 'y', 'x', 'width', 'height', 'laneId']
-    trajectory['v_x'] = trajectory['x'].diff() / 0.1
-    trajectory['v_y'] = trajectory['y'].diff() / 0.1
-    trajectory['a_x'] = trajectory['v_x'].diff() / 0.1
-    trajectory['a_y'] = trajectory['v_y'].diff() / 0.1
+    trajectory.loc[:, 'v_x'] = trajectory['x'].diff() / 0.1
+    trajectory.loc[:, 'v_y'] = trajectory['y'].diff() / 0.1
+    trajectory.loc[:, 'a_x'] = trajectory['v_x'].diff() / 0.1
+    trajectory.loc[:, 'a_y'] = trajectory['v_y'].diff() / 0.1
 
-    trajectory = trajectory[trajectory['frame'] >= decision_time - 20]
+    trajectory = trajectory.loc[trajectory['frame'] >= decision_time - 20].copy()
 
     return trajectory
 
@@ -75,10 +83,7 @@ class TrajectoryDataset(Dataset):
         state_data = []
 
         assert if_test in ['train', 'val', 'test']
-        if if_test == 'train':
-            all_data = all_data[:150]
-        else:
-            all_data = all_data[150:]
+        all_data = [all_data[index] for index in split_scene_ids(if_test) if index < len(all_data)]
 
         for pair in all_data:
             nlv = pair[['frame', 'id', 'y', 'x', 'width', 'height', 'laneId']]
@@ -129,3 +134,4 @@ class TrajectoryDataset(Dataset):
             self.pred_traj[index, :], self.state_data[index, :]
         ]
         return out
+

@@ -30,8 +30,9 @@ device = 'cuda'
 # Evaluation Module（安全加载判别器权重）
 airl_dir = Path(__file__).resolve().parent.parent / "Step1_Reward_Recovery"  # 判别器类定义位置
 sys.path.append(str(airl_dir))
-from airl import AIRLDiscrim, SocialAIRLDiscrim, SocialPotentialNet  # noqa: E402
-add_safe_globals([AIRLDiscrim, SocialAIRLDiscrim, SocialPotentialNet])
+from airl import AIRLDiscrim, SocialAIRLDiscrim, AnisotropicInteractionPotential  # noqa: E402
+from reward_config import HISTORY_LEN, GAMMA, L_LONG, L_LAT, DIR_LAMBDA
+from common.scene_splits import TEST_SCENE_IDS
 
 # 判别器权重路径可通过环境变量覆盖，默认使用 trained_model_best
 default_disc = Path(__file__).resolve().parent / "trained_model_best" / "disc_lcv.pt"
@@ -39,8 +40,14 @@ disc_path = Path(os.environ.get("EVAL_DISC_PATH", default_disc))
 if not disc_path.exists():
     raise FileNotFoundError(f"未找到判别器权重文件：{disc_path}")
 
-disc_lcv = torch.load(disc_path, map_location=device, weights_only=False)
-USE_SOCIAL_REWARD = os.environ.get("EVAL_USE_SOCIAL_REWARD", "0") == "1"
+disc_state = torch.load(disc_path, map_location=device, weights_only=True)
+interaction_path = disc_path.with_name('interaction.pt')
+interaction = AnisotropicInteractionPotential(L_LONG, L_LAT, DIR_LAMBDA).to(device)
+if interaction_path.exists():
+    interaction.load_state_dict(torch.load(interaction_path, map_location=device, weights_only=True))
+disc_lcv = SocialAIRLDiscrim(16 * HISTORY_LEN, GAMMA, interaction, 'lcv', HISTORY_LEN).to(device)
+disc_lcv.load_state_dict(disc_state)
+disc_lcv.eval()
 
 
 def _flatten_state(x: torch.Tensor) -> torch.Tensor:
@@ -48,35 +55,17 @@ def _flatten_state(x: torch.Tensor) -> torch.Tensor:
     return x.view(-1, x.shape[-1]) if x.dim() > 2 else x
 
 
-def build_reward_fn(disc, use_social: bool):
-    """
-    兼容 AIRLDiscrim（g/h）与 SocialAIRLDiscrim（private_g/alpha/shared_phi_net/get_reward）。
-    get_reward 的 r_total 是最终奖励；use_social 仅用于旧模型兼容分支。
-    """
-    if hasattr(disc, "g"):
-        return lambda s: disc.g(_flatten_state(s))
-
-    if hasattr(disc, "get_reward"):
-        def _fn(s):
-            flat = _flatten_state(s)
-            r_total, r_private, phi = disc.get_reward(flat)
-            return r_total
-        return _fn
-
-    if hasattr(disc, "private_g"):
-        def _fn(s):
-            flat = _flatten_state(s)
-            base = disc.private_g(flat)
-            if use_social and hasattr(disc, "alpha") and hasattr(disc, "shared_phi_net"):
-                base = base + disc.alpha * disc.shared_phi_net(flat)
-            return base
-        return _fn
-
-    # 兜底：直接调用 forward
-    return lambda s: disc(_flatten_state(s))
+def reward_lcv(state):
+    """Return the discriminator's total reward without recombination."""
+    flat_state = _flatten_state(state)
+    r_total, _, _ = disc_lcv.get_reward(flat_state)
+    return r_total
 
 
-reward_lcv = build_reward_fn(disc_lcv, USE_SOCIAL_REWARD)
+def aggregate_reward(rewards):
+    """Discounted trajectory score used for candidate selection."""
+    weights = GAMMA ** torch.arange(len(rewards), device=rewards.device, dtype=rewards.dtype)
+    return (weights[:, None] * rewards).sum() / weights.sum()
 
 
 def _infer_hist_len(disc_obj) -> int:
@@ -126,22 +115,23 @@ best_res = {}
 all_ade = []
 all_fde = []
 collide_count = 0
-for scene_id in range(53):
+for local_index, scene_id in enumerate(TEST_SCENE_IDS):
+    # Prediction/planning artifacts are stored in test-split order, while the
+    # reference trajectory collection retains global scene indexing.
+    if local_index >= len(plan_data) or local_index >= len(pred_data):
+        break
     print(scene_id)
     nlv = trajectory_set['nlv'][scene_id][['y', 'x', 'v_x', 'v_y', 'a_x', 'a_y']].values[:100, :4]
     olv = trajectory_set['olv'][scene_id][['y', 'x', 'v_x', 'v_y', 'a_x', 'a_y']].values[:100, :4]
     true_lcv = trajectory_set['lcv'][scene_id][['y', 'x', 'v_x', 'v_y', 'a_x', 'a_y']].values[:100, :4]
     true_fv = trajectory_set['fv'][scene_id][['y', 'x', 'v_x', 'v_y', 'a_x', 'a_y']].values[:100, :4]
 
-    best_reward = -1e5
     all_reward = []
-    all_rmse = []
-    all_final_rmse = []
     all_lcv = []
 
-    for p in range(len(plan_data[scene_id]['planned'])):
-        lcv = plan_data[scene_id]['planned'][p][:, :4].detach().cpu().numpy()
-        fv = pred_data[scene_id]['predicted'][p][0].detach().cpu().numpy()
+    for p in range(len(plan_data[local_index]['planned'])):
+        lcv = plan_data[local_index]['planned'][p][:, :4].detach().cpu().numpy()
+        fv = pred_data[local_index]['predicted'][p][0].detach().cpu().numpy()
 
         n_lcv = normalize_obs(copy.deepcopy(lcv))
         n_fv = normalize_obs(copy.deepcopy(fv))
@@ -156,27 +146,21 @@ for scene_id in range(53):
         state = torch.from_numpy(np.concatenate([n_lcv, dfv, dnlv, dolv], axis=1)).to(device).float()
         state = _stack_history_states(state, _disc_hist_len)
 
-        reward = reward_lcv(state).mean()
-
-        # Calculate rmse
-        loss = torch.cat([torch.from_numpy(true_lcv[:, 1:2]), torch.from_numpy(true_lcv[:, 0:1])], dim=-1) - \
-               torch.cat([torch.from_numpy(lcv[:, 1:2]), torch.from_numpy(lcv[:, 0:1])], dim=-1)
-        loss = (loss ** 2).sum(dim=1).sqrt()
-        rmse = loss.mean()
-        final_rmse = loss[-1]
+        with torch.no_grad():
+            reward = aggregate_reward(reward_lcv(state))
 
         all_reward.append(reward.item())
-        all_rmse.append(rmse.item())
-        all_final_rmse.append(final_rmse.item())
-        all_lcv.append(plan_data[scene_id]['planned'][p].detach().cpu().numpy())
+        all_lcv.append(plan_data[local_index]['planned'][p].detach().cpu().numpy())
 
+    # Select exclusively by mean total reward, without ground-truth errors.
+    best_idx = int(np.argmax(all_reward))
+    best_reward = all_reward[best_idx]
+    best_lcv = all_lcv[best_idx]
 
-    _, idx = torch.topk(torch.from_numpy(np.array(all_reward)), k=3)
-    min_idx = idx[np.array(all_final_rmse)[idx.numpy()].argmin()]
-    best_reward = all_reward[min_idx]
-    best_lcv = all_lcv[min_idx]
-    best_rmse = all_rmse[min_idx]
-    best_final_rmse = all_final_rmse[min_idx]
+    # Ground truth is used only to evaluate the selected trajectory.
+    position_error = np.linalg.norm(true_lcv[:, :2] - best_lcv[:, :2], axis=1)
+    best_rmse = float(position_error.mean())
+    best_final_rmse = float(position_error[-1])
     best_res[scene_id] = [best_lcv,
                           trajectory_set['lcv'][scene_id][['y', 'x', 'v_x', 'v_y', 'a_x', 'a_y']].values[:100],
                           best_rmse, best_final_rmse]

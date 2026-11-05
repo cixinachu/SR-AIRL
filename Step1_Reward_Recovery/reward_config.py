@@ -9,6 +9,8 @@ POS_LONG_SCALE = 500.0
 VEL_SCALE = 80.0
 VEL_MIN = -40.0
 VEL_OFFSET = VEL_MIN  # compatibility alias
+ACC_SCALE = 10.0       # m/s^2, stable TCN feature normalization
+JERK_SCALE = 20.0      # m/s^3, stable TCN feature normalization
 
 # Shared dynamic anisotropic interaction kernel.
 L_LONG = 15.0

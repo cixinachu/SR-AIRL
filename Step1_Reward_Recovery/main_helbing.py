@@ -1,149 +1,184 @@
-"""CUDA training entry point for structured SR-AIRL reward recovery."""
-import argparse
-import os
-import random
-from collections import deque
-from datetime import datetime
-
-import numpy as np
 import torch
+from torch import nn
 import torch.nn.functional as F
-from torch.optim import Adam
-from torch.utils.tensorboard import SummaryWriter
 
-from NGSIM_env.envs.env import NGSIMEnv
-from airl import AnisotropicInteractionPotential, SocialAIRLDiscrim
-from ppo_model.PPO import PPO, RolloutBuffer
-from reward_config import (DIR_LAMBDA, FRAME_STATE_DIM, GAMMA, HISTORY_LEN,
-                           L_LAT, L_LONG, MAX_EPISODES, RANK_BATCH_SIZE,
-                           RANK_LAMBDA, RANK_TEMPERATURE, SEED)
+if __package__:
+    from .reward_config import ACC_SCALE, ALPHA_INIT, DT, HISTORY_LEN, JERK_SCALE, POS_LAT_SCALE, POS_LONG_SCALE, VEL_MIN, VEL_SCALE, PRED_HORIZON, PRED_STEPS
+else:
+    from reward_config import ACC_SCALE, ALPHA_INIT, DT, HISTORY_LEN, JERK_SCALE, POS_LAT_SCALE, POS_LONG_SCALE, VEL_MIN, VEL_SCALE, PRED_HORIZON, PRED_STEPS
 
 
-def set_seed(seed):
-    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def build_mlp(input_dim, output_dim, hidden_units=(64, 64), hidden_activation=nn.Tanh(), output_activation=None):
+    layers, units = [], input_dim
+    for next_units in hidden_units:
+        layers.extend((nn.Linear(units, next_units), hidden_activation))
+        units = next_units
+    layers.append(nn.Linear(units, output_dim))
+    if output_activation is not None:
+        layers.append(output_activation)
+    return nn.Sequential(*layers)
 
 
-def stacked(history):
-    return np.concatenate(tuple(history), axis=0)
+class AIRLDiscrim(nn.Module):
+    """Unstructured AIRL retained for a fair independent baseline."""
+    def __init__(self, state_shape, gamma, hidden_units_r=(64, 64), hidden_units_v=(64, 64),
+                 hidden_activation_r=nn.ReLU(inplace=True), hidden_activation_v=nn.ReLU(inplace=True)):
+        super().__init__()
+        self.g = build_mlp(state_shape, 1, hidden_units_r, hidden_activation_r)
+        self.h = build_mlp(state_shape, 1, hidden_units_v, hidden_activation_v)
+        self.gamma = gamma
+
+    def f(self, states, dones, next_states):
+        return self.g(states) + self.gamma * (1 - dones.reshape(-1, 1).float()) * self.h(next_states) - self.h(states)
+
+    def discriminator_logits(self, states, dones, log_pis, next_states):
+        return self.f(states, dones, next_states) - log_pis.reshape(-1, 1)
+
+    def forward(self, states, dones, log_pis, next_states):
+        return torch.sigmoid(self.discriminator_logits(states, dones, log_pis, next_states))
+
+    def calculate_policy_reward(self, states, dones, log_pis, next_states):
+        with torch.no_grad():
+            return self.discriminator_logits(states, dones, log_pis, next_states)
+
+    calculate_reward = calculate_policy_reward
 
 
-def trajectory_reward(disc, states):
-    return disc.get_reward(states.reshape(-1, states.shape[-1]))[0].reshape(states.shape[0], -1).mean(1)
+def split_latest_state(states):
+    latest = states[:, -16:]
+    lcv, fv_rel, nlv_rel, olv_rel = latest[:, 0:4], latest[:, 4:8], latest[:, 8:12], latest[:, 12:16]
+    return {"lcv": lcv, "fv": lcv - fv_rel, "nlv": lcv + nlv_rel, "olv": lcv + olv_rel}
 
 
-def pair_loss(disc, pairs, device):
-    count = min(RANK_BATCH_SIZE, len(pairs['positive']))
-    index = torch.randint(len(pairs['positive']), (count,))
-    positive, negative = pairs['positive'][index].to(device), pairs['negative'][index].to(device)
-    margin = trajectory_reward(disc, positive) - trajectory_reward(disc, negative)
-    return -F.logsigmoid(margin / RANK_TEMPERATURE).mean(), margin.mean()
+def extract_private_state(states, role, history_len=HISTORY_LEN):
+    frames = states.reshape(-1, history_len, 16)
+    lcv, fv_rel = frames[..., 0:4], frames[..., 4:8]
+    if role == "lcv":
+        return lcv.reshape(states.shape[0], -1)
+    if role == "fv":
+        return (lcv - fv_rel).reshape(states.shape[0], -1)
+    raise ValueError(role)
 
 
-def run():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--expert_path', required=True, help='expert pickle from scenes 0..99')
-    parser.add_argument('--preference_data', default=None)
-    parser.add_argument('--max_episodes', type=int, default=MAX_EPISODES)
-    parser.add_argument('--seed', type=int, default=SEED)
-    parser.add_argument('--lambda_rank', type=float, default=RANK_LAMBDA)
-    parser.add_argument('--save_every', type=int, default=1000)
-    parser.add_argument('--log_dir', default=None)
-    args = parser.parse_args()
-    if not os.path.isfile(args.expert_path): parser.error(f'expert data not found: {args.expert_path}')
-    if not torch.cuda.is_available(): raise RuntimeError('SR-AIRL training requires CUDA.')
-    set_seed(args.seed); device = torch.device('cuda'); state_dim = FRAME_STATE_DIM * HISTORY_LEN
-    log_dir = args.log_dir or os.path.join(os.path.dirname(__file__), 'runs', 'sr_airl', datetime.now().strftime('%Y%m%d-%H%M%S'))
-    checkpoints = os.path.join(log_dir, 'checkpoints'); os.makedirs(checkpoints, exist_ok=True)
-    writer = SummaryWriter(log_dir)
-    print(f'CUDA: {torch.cuda.get_device_name(device)}\nTensorBoard: {log_dir}')
-
-    env = NGSIMEnv(scene='us-101')
-    expert = RolloutBuffer(); expert.add_exp(args.expert_path, use_history=True, history_len=HISTORY_LEN)
-    if expert.states.shape[-1] != state_dim: raise ValueError('expert data has incompatible state dimension')
-    shared = AnisotropicInteractionPotential(L_LONG, L_LAT, DIR_LAMBDA).to(device)
-    disc_lcv = SocialAIRLDiscrim(state_dim, GAMMA, shared, 'lcv', HISTORY_LEN).to(device)
-    disc_fv = SocialAIRLDiscrim(state_dim, GAMMA, shared, 'fv', HISTORY_LEN).to(device)
-    groups = [disc_lcv.private_g.parameters(), disc_lcv.h.parameters(), [disc_lcv.alpha_raw],
-              disc_fv.private_g.parameters(), disc_fv.h.parameters(), [disc_fv.alpha_raw], shared.parameters()]
-    parameters = [p for g in groups for p in g]
-    if len({id(p) for p in parameters}) != len(parameters): raise RuntimeError('duplicate optimizer parameter')
-    optimizer = Adam(parameters, lr=3e-4)
-    model_lcv = PPO(state_dim, 2, 3e-4, 1e-3, GAMMA, 80, .2, True, .2)
-    model_fv = PPO(state_dim, 2, 3e-4, 1e-3, GAMMA, 80, .2, True, .2)
-    pairs = torch.load(args.preference_data, map_location='cpu', weights_only=True) if args.preference_data else None
-    if pairs is not None and not {'lcv', 'fv'}.issubset(pairs): raise ValueError('preference data must contain lcv and fv')
-
-    def save(episode, final=False):
-        package = {'episode': episode, 'seed': args.seed, 'history_len': HISTORY_LEN,
-                   'disc_lcv': disc_lcv.state_dict(), 'disc_fv': disc_fv.state_dict(),
-                   'interaction': shared.state_dict(), 'optimizer': optimizer.state_dict(),
-                   'model_lcv': model_lcv.policy.state_dict(), 'model_fv': model_fv.policy.state_dict()}
-        torch.save(package, os.path.join(checkpoints, 'train_state.pt'))
-        torch.save(disc_lcv.state_dict(), os.path.join(checkpoints, 'disc_lcv.pt'))
-        torch.save(disc_fv.state_dict(), os.path.join(checkpoints, 'disc_fv.pt'))
-        torch.save(shared.state_dict(), os.path.join(checkpoints, 'interaction.pt'))
-        if final: print(f'Saved final checkpoint: {checkpoints}')
-
-    for episode in range(1, args.max_episodes + 1):
-        obs = env.reset(scene_id=(episode - 1) % 100)
-        history = deque([obs.copy() for _ in range(HISTORY_LEN)], maxlen=HISTORY_LEN)
-        done = False; env_return = 0.
-        while not done:
-            state = stacked(history)
-            action = np.r_[model_lcv.select_action(state) * 5, model_fv.select_action(state) * 5]
-            next_obs, reward, done, _ = env.step(action)
-            history.append(next_obs); next_state = stacked(history)
-            for model in (model_lcv, model_fv):
-                model.buffer.rewards.append(reward); model.buffer.is_terminals.append(done)
-                model.buffer.next_states.append(torch.from_numpy(next_state[None]).to(device))
-            env_return += reward
-        writer.add_scalar('Generator/Episode_Reward', env_return, episode)
-        if episode % 150:
-            if episode % args.save_every == 0: save(episode)
-            continue
-
-        aggregate = {'loss': [], 'rank': [], 'margin': [], 'expert_acc': [], 'policy_acc': []}
-        for _ in range(10):
-            sl, al, _, dl, logl, nsl = model_lcv.buffer.sample(64)
-            sf, af, _, df, logf, nsf = model_fv.buffer.sample(64)
-            se, ae, _, de, nse = expert.sample(64, if_exp=True)
-            sl, sf, nsl, nsf, se, nse = [v.float().to(device) for v in (sl, sf, nsl, nsf, se, nse)]
-            dl, df, de = [v.reshape(-1).float().to(device) for v in (dl, df, de)]
-            with torch.no_grad():
-                epl, _, _ = model_lcv.policy.evaluate(se, ae.float().to(device)[:, :2] / 5)
-                epf, _, _ = model_fv.policy.evaluate(se, ae.float().to(device)[:, 2:] / 5)
-            lel = disc_lcv.discriminator_logits(se, de, epl, nse); lef = disc_fv.discriminator_logits(se, de, epf, nse)
-            lpl = disc_lcv.discriminator_logits(sl, dl, logl.to(device), nsl); lpf = disc_fv.discriminator_logits(sf, df, logf.to(device), nsf)
-            base = sum((F.binary_cross_entropy_with_logits(x, torch.ones_like(x)) for x in (lel, lef)), torch.zeros((), device=device))
-            base += sum((F.binary_cross_entropy_with_logits(x, torch.zeros_like(x)) for x in (lpl, lpf)), torch.zeros((), device=device))
-            rank = torch.zeros((), device=device); margin = torch.zeros((), device=device)
-            if pairs is not None and args.lambda_rank:
-                rl, ml = pair_loss(disc_lcv, pairs['lcv'], device); rf, mf = pair_loss(disc_fv, pairs['fv'], device)
-                rank, margin = rl + rf, (ml + mf) / 2
-            loss = base + args.lambda_rank * rank
-            optimizer.zero_grad(); loss.backward(); optimizer.step()
-            aggregate['loss'].append(loss.item()); aggregate['rank'].append(rank.item()); aggregate['margin'].append(margin.item())
-            aggregate['expert_acc'].append(((lel > 0).float().mean() + (lef > 0).float().mean()).item() / 2)
-            aggregate['policy_acc'].append(((lpl < 0).float().mean() + (lpf < 0).float().mean()).item() / 2)
-        for key, values in aggregate.items(): writer.add_scalar(f'Discriminator/{key}', np.mean(values), episode)
-
-        for disc, model in ((disc_lcv, model_lcv), (disc_fv, model_fv)):
-            states, actions, dones, logpis, next_states = model.buffer.get()
-            states, dones, logpis, next_states = states.float().to(device), dones.float().to(device), logpis.float().to(device), next_states.float().to(device)
-            signal = disc.calculate_policy_reward(states, dones, logpis, next_states).clamp(-10, 10)
-            total, private, phi = disc.get_reward(states)
-            name = disc.role.upper()
-            writer.add_scalar(f'Recovered_Reward/{name}_total', total.mean().item(), episode)
-            writer.add_scalar(f'Recovered_Reward/{name}_private', private.mean().item(), episode)
-            writer.add_scalar(f'Interaction/{name}_phi', phi.mean().item(), episode)
-            model.buffer.rewards = [r.detach() for r in signal]
-            model.update()
-        for name, value in {'alpha_lcv': disc_lcv.alpha, 'alpha_fv': disc_fv.alpha, 'L_long': shared.L_long, 'L_lat': shared.L_lat, 'dir_lambda': shared.dir_lambda}.items(): writer.add_scalar(f'Interaction/{name}', value.item(), episode)
-        if episode % args.save_every == 0: save(episode)
-    save(args.max_episodes, final=True); writer.close(); env.close()
+def extract_motion_features(states, role, history_len=HISTORY_LEN):
+    """Causal ego features: difference physical kinematics, then normalize."""
+    frames = states.reshape(-1, history_len, 16)
+    ego = frames[..., 0:4] if role == "lcv" else frames[..., 0:4] - frames[..., 4:8]
+    position = torch.stack((ego[..., 0] * POS_LAT_SCALE, ego[..., 1] * POS_LONG_SCALE), dim=-1)
+    velocity = ego[..., 2:4] * VEL_SCALE + VEL_MIN
+    rel_position = (position - position[:, :1]) / position.new_tensor((POS_LAT_SCALE, POS_LONG_SCALE))
+    acceleration = torch.diff(velocity, dim=1, prepend=velocity[:, :1]) / DT
+    jerk = torch.diff(acceleration, dim=1, prepend=acceleration[:, :1]) / DT
+    features = torch.cat((rel_position, velocity / VEL_SCALE, acceleration / ACC_SCALE, jerk / JERK_SCALE), dim=-1)
+    return features.transpose(1, 2)
 
 
-if __name__ == '__main__':
-    run()
+class CausalConv1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, dilation=1):
+        super().__init__()
+        self.pad = (kernel_size - 1) * dilation
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, dilation=dilation, padding=self.pad)
+
+    def forward(self, x):
+        y = self.conv(x)
+        return y[..., :-self.pad] if self.pad else y
+
+
+class TemporalPrivateReward(nn.Module):
+    def __init__(self, input_dim=8, hidden_dim=64):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            CausalConv1d(input_dim, hidden_dim, dilation=1), nn.ReLU(),
+            CausalConv1d(hidden_dim, hidden_dim, dilation=2), nn.ReLU(),
+            CausalConv1d(hidden_dim, hidden_dim, dilation=4), nn.ReLU(),
+        )
+        self.reward_head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1))
+
+    def forward(self, features):
+        return self.reward_head(self.encoder(features)[:, :, -1])
+
+
+class AnisotropicInteractionPotential(nn.Module):
+    """One bounded, learnable dynamic interaction kernel shared across roles."""
+    def __init__(self, L_long=15.0, L_lat=3.5, dir_lambda=0.3):
+        super().__init__()
+        self._l_long_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(float(L_long)))))
+        self._l_lat_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(float(L_lat)))))
+        self._dir_lambda_raw = nn.Parameter(torch.logit(torch.tensor(float(dir_lambda)).clamp(1e-4, 1 - 1e-4)))
+
+    @property
+    def L_long(self): return F.softplus(self._l_long_raw).clamp_min(1e-3)
+
+    @property
+    def L_lat(self): return F.softplus(self._l_lat_raw).clamp_min(1e-3)
+
+    @property
+    def dir_lambda(self): return torch.sigmoid(self._dir_lambda_raw)
+
+    @staticmethod
+    def _physical_state(x):
+        return x[:, 0] * POS_LAT_SCALE, x[:, 1] * POS_LONG_SCALE, x[:, 2] * VEL_SCALE + VEL_MIN, x[:, 3] * VEL_SCALE + VEL_MIN
+
+    def pair_potential(self, target, neighbor):
+        lat_i, lon_i, vl_i, vt_i = self._physical_state(target)
+        lat_j, lon_j, vl_j, vt_j = self._physical_state(neighbor)
+        psi = torch.atan2(vt_i, vl_i)
+        cos_psi, sin_psi = torch.cos(psi), torch.sin(psi)
+        d_long, d_lat = lon_j - lon_i, lat_j - lat_i
+        rel_long, rel_lat = vl_j - vl_i, vt_j - vt_i
+        x0, y0 = cos_psi * d_long + sin_psi * d_lat, -sin_psi * d_long + cos_psi * d_lat
+        vx, vy = cos_psi * rel_long + sin_psi * rel_lat, -sin_psi * rel_long + cos_psi * rel_lat
+        horizon = torch.linspace(DT, PRED_HORIZON, PRED_STEPS, device=target.device, dtype=target.dtype)
+        x_pred, y_pred = x0[:, None] + vx[:, None] * horizon, y0[:, None] + vy[:, None] * horizon
+        q = (x_pred / self.L_long).square() + (y_pred / self.L_lat).square()
+        spatial = torch.exp(-q)
+        distance = torch.sqrt(x_pred.square() + y_pred.square())
+        cos_phi = torch.where(distance > 1e-4, x_pred / distance.clamp_min(1e-4), torch.ones_like(distance))
+        direction_weight = self.dir_lambda + (1.0 - self.dir_lambda) * (1.0 + cos_phi) / 2.0
+        return (direction_weight * spatial).mean(dim=1)
+
+    def forward(self, states, role="lcv"):
+        vehicles = split_latest_state(states)
+        if role == "lcv":
+            target, neighbors = vehicles["lcv"], (vehicles["fv"], vehicles["nlv"], vehicles["olv"])
+        elif role == "fv":
+            target, neighbors = vehicles["fv"], (vehicles["lcv"], vehicles["nlv"], vehicles["olv"])
+        else:
+            raise ValueError(role)
+        return torch.stack([self.pair_potential(target, other) for other in neighbors], dim=-1).sum(dim=-1, keepdim=True)
+
+
+class SocialAIRLDiscrim(nn.Module):
+    def __init__(self, state_shape, gamma, shared_interaction_potential, role="lcv", history_len=HISTORY_LEN,
+                 hidden_units_v=(64, 64), **kwargs):
+        super().__init__()
+        if role not in ("lcv", "fv") or state_shape != history_len * 16:
+            raise ValueError("SocialAIRLDiscrim requires role lcv/fv and state_shape == history_len * 16")
+        self.role, self.history_len, self.gamma = role, history_len, gamma
+        self.interaction_potential = shared_interaction_potential
+        self.private_g = TemporalPrivateReward()
+        self.h = build_mlp(state_shape, 1, hidden_units_v, nn.ReLU())
+        self.alpha_raw = nn.Parameter(torch.log(torch.expm1(torch.tensor(ALPHA_INIT))))
+
+    @property
+    def alpha(self): return F.softplus(self.alpha_raw)
+
+    def get_reward(self, states):
+        r_private = self.private_g(extract_motion_features(states, self.role, self.history_len))
+        phi = self.interaction_potential(states, role=self.role)
+        return r_private - self.alpha * phi, r_private, phi
+
+    def f(self, states, dones, next_states):
+        reward, _, _ = self.get_reward(states)
+        return reward + self.gamma * (1.0 - dones.reshape(-1, 1).float()) * self.h(next_states) - self.h(states)
+
+    def discriminator_logits(self, states, dones, log_pis, next_states):
+        return self.f(states, dones, next_states) - log_pis.reshape(-1, 1)
+
+    def forward(self, states, dones, log_pis, next_states):
+        return torch.sigmoid(self.discriminator_logits(states, dones, log_pis, next_states))
+
+    def calculate_policy_reward(self, states, dones, log_pis, next_states):
+        with torch.no_grad():
+            return self.discriminator_logits(states, dones, log_pis, next_states)
 

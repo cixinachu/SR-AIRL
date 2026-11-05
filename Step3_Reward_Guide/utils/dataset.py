@@ -4,6 +4,13 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import pickle
 import random
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from common.scene_splits import split_scene_ids
 
 
 def data_loader(obs_len, pred_len, skip, batch_size, path, shuffle=True, save_path='', if_test='train'):
@@ -54,10 +61,9 @@ class TrajectoryDataset(Dataset):
         olv_data = []
 
         assert if_test in ['train', 'val', 'test']
-        if if_test == 'train':
-            all_data = all_data[:150]
-        else:
-            all_data = all_data[150:]
+        # The pair file uses the shared scene order.  Do not train on val/test.
+        scene_ids = split_scene_ids(if_test)
+        all_data = [all_data[index] for index in scene_ids if index < len(all_data)]
 
         for pair in all_data:
             nlv = pair[['frame', 'id', 'y', 'x', 'width', 'height', 'laneId']].iloc[20:]
@@ -91,3 +97,4 @@ class TrajectoryDataset(Dataset):
             self.nlv_traj[index, :], self.olv_traj[index, :]
         ]
         return out
+

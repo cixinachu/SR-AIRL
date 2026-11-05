@@ -3,9 +3,9 @@ from torch import nn
 import torch.nn.functional as F
 
 if __package__:
-    from .reward_config import ALPHA_INIT, DT, HISTORY_LEN, POS_LAT_SCALE, POS_LONG_SCALE, VEL_MIN, VEL_SCALE, PRED_HORIZON, PRED_STEPS
+    from .reward_config import ACC_SCALE, ALPHA_INIT, DT, HISTORY_LEN, JERK_SCALE, POS_LAT_SCALE, POS_LONG_SCALE, VEL_MIN, VEL_SCALE, PRED_HORIZON, PRED_STEPS
 else:
-    from reward_config import ALPHA_INIT, DT, HISTORY_LEN, POS_LAT_SCALE, POS_LONG_SCALE, VEL_MIN, VEL_SCALE, PRED_HORIZON, PRED_STEPS
+    from reward_config import ACC_SCALE, ALPHA_INIT, DT, HISTORY_LEN, JERK_SCALE, POS_LAT_SCALE, POS_LONG_SCALE, VEL_MIN, VEL_SCALE, PRED_HORIZON, PRED_STEPS
 
 
 def build_mlp(input_dim, output_dim, hidden_units=(64, 64), hidden_activation=nn.Tanh(), output_activation=None):
@@ -61,14 +61,16 @@ def extract_private_state(states, role, history_len=HISTORY_LEN):
 
 
 def extract_motion_features(states, role, history_len=HISTORY_LEN):
-    """Causal ego-only [relative position, velocity, acceleration, jerk]."""
+    """Causal ego features: difference physical kinematics, then normalize."""
     frames = states.reshape(-1, history_len, 16)
     ego = frames[..., 0:4] if role == "lcv" else frames[..., 0:4] - frames[..., 4:8]
-    position, velocity = ego[..., 0:2], ego[..., 2:4]
-    rel_position = position - position[:, :1]
+    position = torch.stack((ego[..., 0] * POS_LAT_SCALE, ego[..., 1] * POS_LONG_SCALE), dim=-1)
+    velocity = ego[..., 2:4] * VEL_SCALE + VEL_MIN
+    rel_position = (position - position[:, :1]) / position.new_tensor((POS_LAT_SCALE, POS_LONG_SCALE))
     acceleration = torch.diff(velocity, dim=1, prepend=velocity[:, :1]) / DT
     jerk = torch.diff(acceleration, dim=1, prepend=acceleration[:, :1]) / DT
-    return torch.cat((rel_position, velocity, acceleration, jerk), dim=-1).transpose(1, 2)
+    features = torch.cat((rel_position, velocity / VEL_SCALE, acceleration / ACC_SCALE, jerk / JERK_SCALE), dim=-1)
+    return features.transpose(1, 2)
 
 
 class CausalConv1d(nn.Module):
